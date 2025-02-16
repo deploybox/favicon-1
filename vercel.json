@@ -1,0 +1,16 @@
+{
+  "build": {
+    "env": {
+      "NODE_VERSION": "18.x"
+    }
+  },
+  "functions": {
+    "api/*.php": {
+      "runtime": "vercel-php@0.7.3"
+    }
+  },
+  "routes": [
+    { "src": "/phpinfo", "dest": "/api/phpinfo.php" },
+    { "src": "/(.*)",  "dest": "/api/index.php" }
+  ]
+}

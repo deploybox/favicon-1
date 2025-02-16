@@ -11,8 +11,8 @@ if( !isset($_GET['url'])){
     return http_response_code(404);
 }
 
-require "./config.php"; // 配置文件
-require "./Favicon.php";
+require 'config.php'; // 配置文件
+require 'Favicon.php';
 
 $favicon = new \Jerrybendy\Favicon\Favicon;
 
@@ -24,7 +24,7 @@ $expire     = EXPIRE;
 // 如果 HASH_KEY == iowen 则生成一个随机字符串，并更新config.php文件
 if (HASH_KEY == 'iowen') {
     $hash_key = substr(hash('sha256', uniqid()), 0, 16);
-    file_put_contents('./config.php', str_replace('iowen', $hash_key, file_get_contents('./config.php')));
+    file_put_contents('config.php', str_replace('iowen', $hash_key, file_get_contents('config.php')));
 }
 
 /**

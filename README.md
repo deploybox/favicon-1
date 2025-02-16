@@ -1,37 +1,43 @@
-# getFavicon
-获取网站的Favicon图标并显示在你的网页上.
-<br/>
+# FetchFavicon
 
-### 演示
-<a href="https://api.iowen.cn/favicon/" target="_blank">演示地址</a>
-<br/>
+用 PHP 获取网站 favicon 的API，可用于美化网站外链显示效果。
 
-### 安装使用
-+ 上传到网站根目录或者 favicon 文件夹中
-+ cache 文件夹给 755 权限
-+ 然后访问 http://you.url/favicon/get.php?url=https://www.iowen.cn
-<br/>
+## 部署
 
-+ 如果出现获取不了的情况建议删除缓存再试一次
-+ 注：文中 faviconw 为 api 文件夹，酌情设置
-<br/>
+### 使用 [`Vercel`](https://github.com/vercel-community/php) 部署
 
-### 伪静态
-方便cdn缓存
-```
+<a href="https://vercel.com/new/clone?repository-url=https://github.com/deploybox/FetchFavicon&project-name=favicon&repository-name=favicon"><img src="https://vercel.com/button"></a>
+
+### Nginx
+
+将 `api` 目录设置为根目录，或者将 `index.php` 放置在网站根目录下即可。
+
+**伪静态**，方便 CDN 缓存
+
+```sh
 # Nginx规则
-rewrite ^/favicon/(.*)\.png$ /favicon/get.php?url=$1;
-
-# Apache 规则
-<IfModule mod_rewrite.c>
-RewriteEngine On
-RewriteRule ^favicon/(.*)\.png$ favicon/get.php?url=$1 [L]
-</IfModule>
+rewrite ^/favicon/(.*)\.png$ /api/index.php?url=$1;
 ```
-调用方法 http://you.url/favicon/www.iowen.cn.png
-+ 注：目标网址不能有 http(s)://
-<br/>
 
-### 感谢
-感谢 <a href="https://github.com/jerrybendy/get_favicon" target="_blank">jerrybendy</a> ，此版本只是修复一些 bug 和编写了获取方法。
-<br/>
+## 使用
+
+`https://favicons-idev.vercel.app/?url=域名`
+
+```
+https://favicons-idev.vercel.app/?url=example.com
+```
+
+## 示例
+
+- [x] 百度 ![](https://favicons-idev.vercel.app/?url=www.baidu.com)
+- [x] 维基百科 ![](https://favicons-idev.vercel.app/?url=www.wikipedia.org)
+- [x] segmentfault ![](https://favicons-idev.vercel.app/?url=segmentfault.com)
+- [x] GitHub ![](https://favicons-idev.vercel.app/?url=github.com)
+
+## 鸣谢
+
+- https://github.com/owen0o0/getFavicon
+
+## LICENSE
+
+MIT
