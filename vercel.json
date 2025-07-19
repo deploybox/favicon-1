@@ -1,12 +1,12 @@
 {
   "build": {
     "env": {
-      "NODE_VERSION": "18.x"
+      "NODE_VERSION": "22.x"
     }
   },
   "functions": {
     "api/*.php": {
-      "runtime": "vercel-php@0.7.3"
+      "runtime": "vercel-php@0.7.4"
     }
   },
   "routes": [

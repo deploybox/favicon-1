@@ -1,632 +1,487 @@
 <?php
+declare(strict_types=1);
+
 /**
- * 获取网站Favicon服务接口
+ * Favicon Service Interface
  *
- * @author    Jerry Bendy / 一为
- * @date      2014-09-10
- * @link      https://www.iowen.cn
- * @version   2.1.0
+ * Retrieves favicon data from a given URL with support for caching and debugging.
+ *
+ * PHP Version: 8.3
+ *
+ * @author Jerry Bendy
+ * @link http://blog.icewingcc.com
  */
 
 namespace Jerrybendy\Favicon;
 
-
-/**
- * Favicon 获取类
- *
- * ## 关于缓存:
- * 本来类库中是调用Redis来做缓存，后来想了下，还是让这个类只专注于自己的业
- * 务吧（获取图标）缓存这些操作交给外部来处理
- *
- * @author Jerry Bendy
- *
- * @link   http://blog.icewingcc.com
- *
- */
+use InvalidArgumentException;
 
 class Favicon
 {
+    /**
+     * Enable debug mode to log runtime information to error log.
+     */
+    public bool $debug_mode = false;
 
     /**
-     * 是否使用调试模式，默认不启用
-     * 可以通过修改此变量的值以启用调试，将会在控制台中
-     * 或错误日志中输出一些运行相关的信息
+     * Parsed URL parameters and additional data.
      *
-     * @var bool
+     * @var array<string, mixed>
      */
-    public $debug_mode = false;
-
+    private array $params = [];
 
     /**
-     * 保存传入的参数,其中:
-     *
-     *    origin_url:     保存传入的url参数的原始字符串信息
-     *
-     *
-     *  以及一些额外的参数及暂存的数据
+     * Full host URL (e.g., http://example.com:8080).
      */
-    private $params = array();
+    private string $full_host = '';
 
     /**
-     * 完整的形如  http://xxx.xxx.com:8888 这样的地址
+     * Favicon binary data.
      */
-    private $full_host = '';
+    private ?string $data = null;
 
     /**
-     * 包含获取到的最终的二进制数据
-     *
+     * Time spent on the last request in seconds.
      */
-    private $data = NULL;
+    private float $last_time_spend = 0.0;
 
     /**
-     * 最后一次请求花费的时间
-     *
-     * @var double
+     * Memory usage of the last request in MB.
      */
-    private $_last_time_spend = 0;
+    private string $last_memory_usage = '0';
 
     /**
-     * 最后一次请求消耗的内存
+     * Mapping of regex patterns to file paths for quick favicon retrieval.
      *
-     * @var string
+     * @var array<string, string>
      */
-    private $_last_memory_usage = 0;
+    private array $file_map = [];
 
     /**
-     * 文件映射，用于在规则匹配时直接返回内容
-     *
-     * @var array
+     * Default favicon file path to use if retrieval fails.
      */
-    private $_file_map = [];
-
+    private string $default_icon = '';
 
     /**
-     * 默认图标，如果设置了此文件将会在请求失败时返回这个图标
+     * Retrieves and outputs a website's favicon.
      *
-     * @var string
+     * @param string $url The input URL
+     * @param bool $return Whether to return binary content or output it directly
+     * @return string|null Binary favicon data if $return is true, null otherwise
+     * @throws InvalidArgumentException If the URL is empty or invalid
      */
-    private $_default_icon = '';
-
-
-    /**
-     * 获取网站Favicon并输出
-     *
-     * @param string $url    输入的网址
-     *                       (The input URL)
-     * @param bool   $return 是要求返回二进制内容还是直接显示它
-     * @throws \InvalidArgumentException
-     * @return string
-     *
-     */
-    public function getFavicon($url = '', $return = FALSE)
+    public function getFavicon(string $url, bool $return = false): ?string
     {
-
-        /**
-         * 验证传入参数
-         */
-        if (!$url) {
-            throw new \InvalidArgumentException(__CLASS__ . ': Url cannot be empty', E_ERROR);
+        if (empty($url)) {
+            throw new InvalidArgumentException('URL cannot be empty', E_ERROR);
         }
 
-        //
         $this->params['origin_url'] = $url;
 
-        //解析URL参数
-        $ret = $this->formatUrl($url);
-        if (!$ret) {
-            throw new \InvalidArgumentException(__CLASS__ . ': Invalided url', E_WARNING);
+        if (!$this->formatUrl($url)) {
+            throw new InvalidArgumentException('Invalid URL', E_WARNING);
         }
 
-        /**
-         * 开始获取图标过程
-         */
-        $time_start = microtime(TRUE);
+        $time_start = microtime(true);
+        $this->logMessage("Begin to get favicon for {$url}");
 
-        $this->_log_message('Begin to get icon, ' . $url);
+        $this->data = $this->getData();
 
+        $this->last_time_spend = microtime(true) - $time_start;
+        $this->last_memory_usage = function_exists('memory_get_usage')
+            ? sprintf('%.2f MB', memory_get_usage() / 1024 / 1024)
+            : '0 MB';
 
-        /**
-         * get the favicon bin data
-         */
-        $data = $this->getData();
+        $this->logMessage("Favicon retrieval completed, time: {$this->last_time_spend}s, memory: {$this->last_memory_usage}");
 
-        /**
-         * 获取过程结束
-         * 计算时间及内存的占用信息
-         */
-        $time_end               = microtime(TRUE);
-        $this->_last_time_spend = $time_end - $time_start;
-
-        $this->_last_memory_usage = ((!function_exists('memory_get_usage')) ? '0' : round(memory_get_usage() / 1024 / 1024, 2)) . 'MB';
-
-        $this->_log_message('Get icon complate, spent time ' . $this->_last_time_spend . 's, Memory_usage ' . $this->_last_memory_usage);
-
-        /**
-         * 设置输出Header信息
-         * Output common header
-         *
-         */
-
-        if ($data === FALSE && $this->_default_icon) {
-            $data = @file_get_contents($this->_default_icon);
+        if ($this->data === null && $this->default_icon !== '') {
+            $this->data = @file_get_contents($this->default_icon) ?: null;
         }
-
 
         if ($return) {
-            return $data;
-
-        } else {
-
-            if ($data !== FALSE) {
-
-                foreach ($this->getHeader() as $header) {
-                    @header($header);
-                }
-
-                echo $data;
-
-            } else {
-                header('Content-type: application/json');
-                echo json_encode(array('status' => -1, 'msg' => 'Unknown Error'));
-            }
-        }
-
-        return NULL;
-    }
-
-
-    /**
-     * 获取输出 header
-     * 2019 添加缓存时间
-     *
-     * @since v2.1
-     * @return array
-     */
-    public function getHeader()
-    {
-        return array(
-            'X-Robots-Tag: noindex, nofollow',
-            'Content-type: image/x-icon',
-            'Cache-Control: public, max-age=86400',
-            'Expires: ' . gmdate('D, d M Y H:i:s', time() + 86400) . ' GMT'
-        );
-    }
-
-
-    /**
-     * 设置一组正则表达式到文件的映射，
-     * 用于在规则匹配成功时直接从本地或指定的URL处获取内容并返回
-     *
-     * @param array $map 映射内容必须是   正则表达式  =>  文件路径  的数组，
-     *                   文件通过 file_get_contents 函数读取，所以可以是本地文件或网络文件路径，
-     *                   但必须要保证对应的文件是一定能被读取的
-     * @return $this
-     */
-    public function setFileMap(array $map)
-    {
-        $this->_file_map = $map;
-
-        return $this;
-    }
-
-
-    /**
-     * @param string $filePath
-     * @return $this
-     */
-    public function setDefaultIcon($filePath)
-    {
-        $this->_default_icon = $filePath;
-
-        return $this;
-    }
-
-
-    /**
-     * 获取最终的Favicon图标数据
-     * 此为该类获取图标的核心函数
-     *
-     * @return bool|string
-     */
-    protected function getData()
-    {
-        // 尝试匹配映射
-        $this->data = $this->_match_file_map();
-
-        //判断data中有没有来自插件写入的内容
-        if ($this->data !== NULL) {
-            $this->_log_message('Get icon from static file map, ' . $this->full_host);
-
             return $this->data;
         }
 
-        //从网络获取图标
+        if ($this->data !== null) {
+            foreach ($this->getHeader() as $header) {
+                header($header);
+            }
+            echo $this->data;
+        } else {
+            header('Content-Type: application/json');
+            echo json_encode(['status' => -1, 'msg' => 'Favicon not found']);
+        }
 
-        //从源网址获取HTML内容并解析其中的LINK标签
+        return null;
+    }
+
+    /**
+     * Returns HTTP headers for favicon output.
+     *
+     * @return string[]
+     */
+    public function getHeader(): array
+    {
+        return [
+            'X-Robots-Tag: noindex, nofollow',
+            'Content-Type: image/x-icon',
+            'Cache-Control: public, max-age=86400',
+            'Expires: ' . gmdate('D, d M Y H:i:s', time() + 86400) . ' GMT',
+        ];
+    }
+
+    /**
+     * Sets regex-to-file mappings for favicon retrieval.
+     *
+     * @param array<string, string> $map Regex pattern to file path mappings
+     * @return self
+     */
+    public function setFileMap(array $map): self
+    {
+        $this->file_map = $map;
+        return $this;
+    }
+
+    /**
+     * Sets the default favicon file path.
+     *
+     * @param string $filePath Path to default favicon
+     * @return self
+     */
+    public function setDefaultIcon(string $filePath): self
+    {
+        $this->default_icon = $filePath;
+        return $this;
+    }
+
+    /**
+     * Core function to retrieve favicon data.
+     *
+     * @return string|null Favicon binary data or null if not found
+     */
+    protected function getData(): ?string
+    {
+        // Check file map first
+        $this->data = $this->matchFileMap();
+        if ($this->data !== null) {
+            $this->logMessage("Retrieved favicon from file map for {$this->full_host}");
+            return $this->data;
+        }
+
+        // Fetch HTML and parse for favicon link
         $html = $this->getFile($this->params['origin_url']);
-
-        if ($html && $html['status'] == 'OK') {
-
-            /*
-             * 2016-01-31
-             * FIX #1
-             * 对取到的HTML内容进行删除换行符的处理,避免link信息折行导致的正则匹配失败
-             */
-            $html = str_replace(array("\n", "\r"), '', $html['data']);
-
-            //匹配完整的LINK标签，再从LINK标签中获取HREF的值
-            if (@preg_match('/((<link[^>]+rel=.(icon|shortcut icon|alternate icon|apple-touch-icon)[^>]+>))/i', $html, $match_tag)) {
-
-                if (isset($match_tag[1]) && $match_tag[1] && @preg_match('/href=(\'|\")(.*?)\1/i', $match_tag[1], $match_url)) {
-
-                    if (isset($match_url[2]) && $match_url[2]) {
-
-                        //解析HTML中的相对URL 路径
-                        $match_url[2] = $this->filterRelativeUrl(trim($match_url[2]), $this->params['origin_url']);
-
-                        $icon = $this->getFile($match_url[2], true);
-
-                        if ($icon && $icon['status'] == 'OK') {
-
-                            $this->_log_message("Success get icon from {$this->params['origin_url']}, icon url is {$match_url[2]}");
-
-                            $this->data = $icon['data'];
-                        }
+        if ($html && $html['status'] === 'OK') {
+            $htmlContent = str_replace(["\n", "\r"], '', $html['data']);
+            if (preg_match('/<link[^>]+rel=["\'](?:icon|shortcut icon|apple-touch-icon)["\'][^>]+>/i', $htmlContent, $match_tag)) {
+                if (preg_match('/href=["\'](.*?)["\']/i', $match_tag[0], $match_url)) {
+                    $iconUrl = $this->filterRelativeUrl(trim($match_url[1]), $this->params['origin_url']);
+                    $icon = $this->getFile($iconUrl, true);
+                    if ($icon && $icon['status'] === 'OK') {
+                        $this->logMessage("Retrieved favicon from {$iconUrl}");
+                        return $this->data = $icon['data'];
                     }
                 }
             }
         }
 
-        if ($this->data != NULL) {
-            return $this->data;
-        }
-
-        //用来在第一次获取后保存可能的重定向后的地址
-        $redirected_url = $html['real_url'];
-
-        //未能从LINK标签中获取图标（可能是网址无法打开，或者指定的文件无法打开，或未定义图标地址）
-        //将使用网站根目录的文件代替
+        // Try root favicon.ico
+        $redirected_url = $html['real_url'] ?? $this->full_host;
         $data = $this->getFile($this->full_host . '/favicon.ico', true);
+        if ($data && $data['status'] === 'OK') {
+            $this->logMessage("Retrieved favicon from root: {$this->full_host}/favicon.ico");
+            return $this->data = $data['data'];
+        }
 
-        if ($data && $data['status'] == 'OK') {
-            $this->_log_message("Success get icon from website root: {$this->full_host}/favicon.ico");
-            $this->data = $data['data'];
-
-        } else {
-            //如果直接取根目录文件返回了301或404，先读取重定向，再从重定向的网址获取
-            $ret = $this->formatUrl($redirected_url);
-
-            if ($ret) {
-                //最后的尝试，从重定向后的网址根目录获取favicon文件
-                $data = $this->getFile($this->full_host . '/favicon.ico', true);
-
-                if ($data && $data['status'] == 'OK') {
-                    $this->_log_message("Success get icon from redirect file: {$this->full_host}/favicon.ico");
-                    $this->data = $data['data'];
-                }
-
+        // Try redirected URL's root favicon.ico
+        if ($this->formatUrl($redirected_url)) {
+            $data = $this->getFile($this->full_host . '/favicon.ico', true);
+            if ($data && $data['status'] === 'OK') {
+                $this->logMessage("Retrieved favicon from redirected root: {$this->full_host}/favicon.ico");
+                return $this->data = $data['data'];
             }
         }
 
-        /**
-         * 从其他api最后获取图像 -----------------------------------------------------
-         * t3.gstatic.com 国内可用 t3.gstatic.cn
-         */
-        if ($this->data == NULL) {
-            $thrurl = 'http://t3.gstatic.cn/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&size=128&url=' . $this->full_host;
-            $icon   = file_get_contents($thrurl);
-            if ($icon) {
-                $this->_log_message("--https://t3.gstatic.com/{$this->full_host}/favicon.ico");
-                $this->data = $icon;
-            }
+        // Fallback to external Google API
+        $apiUrl = 'https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=' . urlencode($this->full_host);
+        $icon = @file_get_contents($apiUrl);
+        if ($icon !== false) {
+            $this->logMessage("Retrieved favicon from external Google API: {$apiUrl}");
+            return $this->data = $icon;
         }
 
-        if ($this->data == NULL) {
-            //各个方法都试过了，还是获取不到。。。
-            $this->_log_message("Cannot get icon from {$this->params['origin_url']}");
+        // Fallback to external toolb API
+        $apiUrl = 'https://toolb.cn/favicon/' . parse_url($this->full_host, PHP_URL_HOST);
+        $icon = @file_get_contents($apiUrl);
+        if ($icon !== false) {
+            $this->logMessage("Retrieved favicon from external toolb API: {$apiUrl}");
+            return $this->data = $icon;
+        }        
 
-            return FALSE;
-        }
-
-        return $this->data;
+        $this->logMessage("Failed to retrieve favicon for {$this->params['origin_url']}");
+        return null;
     }
 
-
-
     /**
-     * 解析一个完整的URL中并返回其中的协议、域名和端口部分
-     * 同时会设置类中的parsed_url和full_host属性
+     * Parses a URL and sets full_host property.
      *
-     * @param $url
-     * @return bool|string
+     * @param string $url Input URL
+     * @return string|null Full host URL or null if invalid
      */
-    public function formatUrl($url)
+    public function formatUrl(string $url): ?string
     {
-        /**
-         * 尝试解析URL参数，如果解析失败的话再加上http前缀重新尝试解析
-         *
-         */
         $parsed_url = parse_url($url);
-
-        if ($parsed_url === false || !isset($parsed_url['host']) || !$parsed_url['host']) {
-            //在URL的前面加上http://
-            if (!preg_match('/^https?:\/\/.*/', $url))
+        if ($parsed_url === false || !isset($parsed_url['host']) || empty($parsed_url['host'])) {
+            if (!preg_match('/^https?:\/\//', $url)) {
                 $url = 'http://' . $url;
-            //解析URL并将结果保存到 $this->url
-            $parsed_url = parse_url($url);
-
-            if ($parsed_url === false) {
-                return false;
-            } else {
-                /**
-                 * 能成功解析的话就可以设置原始URL为这个添加过http://前缀的URL
-                 */
+                $parsed_url = parse_url($url);
+                if ($parsed_url === false) {
+                    return null;
+                }
                 $this->params['origin_url'] = $url;
             }
         }
 
-        $this->full_host = (isset($parsed_url['scheme']) ? $parsed_url['scheme'] : 'http') . '://' . $parsed_url['host'] . (isset($parsed_url['port']) ? ':' . $parsed_url['port'] : '');
+        $this->full_host = sprintf(
+            '%s://%s%s',
+            $parsed_url['scheme'] ?? 'http',
+            $parsed_url['host'],
+            isset($parsed_url['port']) ? ':' . $parsed_url['port'] : ''
+        );
 
         return $this->full_host;
     }
 
-
     /**
-     * 把从HTML源码中获取的相对路径转换成绝对路径
+     * Converts relative URLs to absolute URLs.
      *
-     * @see 函数详情： http://blog.icewingcc.com/php-conv-addr-re-ab-2.html
-     *
-     * @param string $url HTML中获取的网址
-     * @param string $URI 用来参考判断的原始地址
-     * @return string 返回修改过的网址
+     * @param string $url Relative or absolute URL from HTML
+     * @param string $baseUri Base URI for reference
+     * @return string|null Absolute URL or null if invalid
      */
-    private function filterRelativeUrl($url, $URI = '')
+    private function filterRelativeUrl(string $url, string $baseUri): ?string
     {
-        //STEP1: 先去判断URL中是否包含协议，如果包含说明是绝对地址则可以原样返回
-        if (strpos($url, '://') !== FALSE) {
+        if (str_contains($url, '://')) {
             return $url;
         }
 
-        //STEP2: 解析传入的URI
-        $URI_part = parse_url($URI);
-        if ($URI_part == FALSE)
-            return FALSE;
-
-        $URI_root = $URI_part['scheme'] . '://' . $URI_part['host'] . (isset($URI_part['port']) ? ':' . $URI_part['port'] : '');
-
-        //STEP3: 如果URL以左斜线开头，表示位于根目录
-
-        // 如果URL以 // 开头,表示是省略协议的绝对路径,可以添加协议后返回
-        if (substr($url, 0, 2) === '//') {
-            return $URI_part['scheme'] . ':' . $url;
+        $uriParts = parse_url($baseUri);
+        if ($uriParts === false) {
+            return null;
         }
 
-        if (strpos($url, '/') === 0) {
-            return $URI_root . $url;
+        $uriRoot = sprintf('%s://%s%s', $uriParts['scheme'], $uriParts['host'], $uriParts['port'] ?? '');
+
+        if (str_starts_with($url, '//')) {
+            return $uriParts['scheme'] . ':' . $url;
         }
 
-        //STEP4: 不位于根目录，也不是绝对路径，考虑如果不包含'./'的话，需要把相对地址接在原URL的目录名上
-        $URI_dir = (isset($URI_part['path']) && $URI_part['path']) ? '/' . ltrim(dirname($URI_part['path']), '/') : '';
-        if (strpos($url, './') === FALSE) {
-            if ($URI_dir != '') {
-                return $URI_root . $URI_dir . '/' . $url;
-            } else {
-                return $URI_root . '/' . $url;
-            }
+        if (str_starts_with($url, '/')) {
+            return $uriRoot . $url;
         }
 
-        //STEP5: 如果相对路径中包含'../'或'./'表示的目录，需要对路径进行解析并递归
-        //STEP5.1: 把路径中所有的'./'改为'/'，'//'改为'/'
+        $uriDir = isset($uriParts['path']) && $uriParts['path'] !== '' ? '/' . ltrim(dirname($uriParts['path']), '/') : '';
+        if (!str_contains($url, './')) {
+            return $uriDir !== '' ? $uriRoot . $uriDir . '/' . $url : $uriRoot . '/' . $url;
+        }
+
         $url = preg_replace('/[^\.]\.\/|\/\//', '/', $url);
-        if (strpos($url, './') === 0)
+        if (str_starts_with($url, './')) {
             $url = substr($url, 2);
-
-        //STEP5.2: 使用'/'分割URL字符串以获取目录的每一部分进行判断
-        $URI_full_dir = ltrim($URI_dir . '/' . $url, '/');
-        $URL_arr      = explode('/', $URI_full_dir);
-
-        // 这里为了解决有些网站在根目录下的文件也使用 ../img/favicon.ico 这种形式的错误,
-        // 对这种本来不合理的路径予以通过, 并忽略掉前面的两个点 (没错, 我说的是 gruntjs 的官网)
-        if ($URL_arr[0] == '..') {
-            array_shift($URL_arr);
         }
 
-        //因为数组的第一个元素不可能为'..'，所以这里从第二个元素可以循环
-        $dst_arr = $URL_arr;  //拷贝一个副本，用于最后组合URL
-        for ($i = 1; $i < count($URL_arr); $i++) {
-            if ($URL_arr[$i] == '..') {
+        $urlParts = explode('/', ltrim($uriDir . '/' . $url, '/'));
+        if ($urlParts[0] === '..') {
+            array_shift($urlParts);
+        }
+
+        $dstParts = $urlParts;
+        for ($i = 1; $i < count($urlParts); $i++) {
+            if ($urlParts[$i] === '..') {
                 $j = 1;
-                while (TRUE) {
-                    if (isset($dst_arr[$i - $j]) && $dst_arr[$i - $j] != FALSE) {
-                        $dst_arr[$i - $j] = FALSE;
-                        $dst_arr[$i]      = FALSE;
-                        break;
-                    } else {
-                        $j++;
-                    }
+                while (isset($dstParts[$i - $j]) && $dstParts[$i - $j] !== false) {
+                    $dstParts[$i - $j] = false;
+                    $dstParts[$i] = false;
+                    break;
                 }
             }
         }
 
-        //STEP6: 组合最后的URL并返回
-        $dst_str = $URI_root;
-        foreach ($dst_arr as $val) {
-            if ($val != FALSE)
-                $dst_str .= '/' . $val;
+        $dstStr = $uriRoot;
+        foreach ($dstParts as $part) {
+            if ($part !== false) {
+                $dstStr .= '/' . $part;
+            }
         }
 
-        return $dst_str;
+        return $dstStr;
     }
 
+    /**
+     * Executes cURL request with redirect following.
+     *
+     * @param resource $ch cURL handle
+     * @param int $maxRedirect Maximum number of redirects
+     * @return string|null Response data or null on failure
+     */
+    private function curlExecFollow($ch, int $maxRedirect = 5): ?string
+    {
+        // If open_basedir and safe_mode are disabled, use native redirect following
+        if (ini_get('open_basedir') === '' && ini_get('safe_mode') === '0') {
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, $maxRedirect > 0);
+            curl_setopt($ch, CURLOPT_MAXREDIRS, $maxRedirect);
+            $result = curl_exec($ch);
+            return $result !== false ? $result : null;
+        }
 
+        // Manual redirect handling
+        $currentUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+        $remainingRedirects = $maxRedirect;
+
+        while ($remainingRedirects > 0) {
+            $rch = curl_copy_handle($ch);
+            curl_setopt_array($rch, [
+                CURLOPT_HEADER => true,
+                CURLOPT_NOBODY => true,
+                CURLOPT_NOSIGNAL => 1,
+                CURLOPT_CONNECTTIMEOUT_MS => 1000, // Increased to 1s for reliability
+                CURLOPT_FORBID_REUSE => false,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_URL => $currentUrl,
+            ]);
+
+            $header = curl_exec($rch);
+            if (curl_errno($rch)) {
+                $this->logMessage("cURL error for {$currentUrl}: " . curl_error($rch));
+                curl_close($rch);
+                return null;
+            }
+
+            $code = curl_getinfo($rch, CURLINFO_HTTP_CODE);
+            curl_close($rch);
+
+            if ($code !== 301 && $code !== 302) {
+                break; // Not a redirect, proceed with final request
+            }
+
+            if (!preg_match('/Location:\s*(.*?)\r?\n/i', $header, $matches)) {
+                $this->logMessage("No Location header found for {$currentUrl}");
+                return null;
+            }
+
+            $newUrl = trim($matches[1]);
+            $this->logMessage("Redirect from {$currentUrl} to {$newUrl}");
+            $newUrl = $this->filterRelativeUrl($newUrl, $currentUrl ?: $this->params['origin_url']);
+            if ($newUrl === null) {
+                $this->logMessage("Failed to resolve redirect URL: {$newUrl}");
+                return null;
+            }
+
+            $currentUrl = $newUrl;
+            $remainingRedirects--;
+        }
+
+        if ($remainingRedirects === 0) {
+            $this->logMessage("Too many redirects for {$this->params['origin_url']}");
+            trigger_error('Too many redirects.', E_USER_WARNING);
+            return null;
+        }
+
+        // Perform final request with updated URL
+        curl_setopt($ch, CURLOPT_URL, $currentUrl);
+        curl_setopt($ch, CURLOPT_HEADER, false);
+        curl_setopt($ch, CURLOPT_NOBODY, false);
+        $result = curl_exec($ch);
+        $this->logMessage("Final request to {$currentUrl}, status: " . curl_getinfo($ch, CURLINFO_HTTP_CODE));
+        return $result !== false ? $result : null;
+    }
 
     /**
-     * 从指定URL获取文件
-     * 2019 添加请求内容判断
-     * 
-     * @param string $url
-     * @param bool   $isimg 是否为图片
-     * @param int    $timeout 超时值，默认为10秒
-     * @return string|array 成功返回获取到的内容，同时设置 $this->content，失败返回FALSE
+     * Fetches file content from a URL using cURL.
+     *
+     * @param string $url URL to fetch
+     * @param bool $isImage Whether the file is expected to be an image
+     * @param int $timeout Timeout in seconds
+     * @return array{status: string, data: string, real_url: string, code?: int} File data and status
      */
-    private function getFile($url, $isimg = false, $timeout = 2)
+    private function getFile(string $url, bool $isImage = false, int $timeout = 2): array
     {
         $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_TIMEOUT => 5,
+            CURLOPT_NOSIGNAL => 1,
+            CURLOPT_TCP_NODELAY => 1,
+            CURLOPT_CONNECTTIMEOUT => $timeout,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => ['Range: bytes=0-512000', 'Connection: close'],
+            CURLOPT_FORBID_REUSE => true,
+            CURLOPT_FAILONERROR => true,
+        ]);
 
-        //添加以下设置：
-        curl_setopt($ch, CURLOPT_TIMEOUT, 5);//设置总体超时5秒
-        curl_setopt($ch, CURLOPT_NOSIGNAL, 1);//在多线程下使用超时选项
-        curL_setopt($ch, CURLOPT_TCP_NODELAY, 1);//不延迟传输
+        $result = $this->curlExecFollow($ch, 5); // Increased max redirects to 5
+        $statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $realUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+        $mime = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
 
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $timeout);
-        /*
-         * 2019-06-20
-         * 修复ssl的错误
-         */
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        $response = [
+            'status' => 'FAIL',
+            'data' => '',
+            'real_url' => $realUrl,
+        ];
 
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-
-        /** @var mixed 只获取500kb的数据，如果目标图片超过500kb，则丢弃 */
-        $request_headers = array('Range: bytes=0-512000'); //500 KB
-        curl_setopt($ch, CURLOPT_FORBID_REUSE, true);
-        $request_headers[] = 'Connection: close';
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $request_headers);
-
-        curl_setopt($ch, CURLOPT_FAILONERROR, 1);
-        //执行重定向获取
-        $ret = $this->curlExecFollow($ch, 2);
-
-        if ($isimg) {
-            $img_info = @getimagesize($url);
-            if (empty($img_info)) {
-                $ret = '';
-                $this->_log_message("不是图片：{$url}");
+        if ($isImage) {
+            $imgInfo = @getimagesizefromstring($result ?: '');
+            if (empty($imgInfo)) {
+                $this->logMessage("Not an image: {$url}");
+                curl_close($ch);
+                return $response;
             }
-            $mime      = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-            $mimeArray = explode('/', $mime);
-        }
-        $arr = array(
-            'status'   => 'FAIL',
-            'data'     => '',
-            'real_url' => ''
-        );
-        if (!$isimg || $mimeArray[0] == 'image') {
-            if ($ret != false) {
-                $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-
-                $arr = array(
-                    'code'     => $status,
-                    'status'   => ($status >= 200 && $status <= 399) ? "OK" : "FAIL",
-                    'data'     => $ret,
-                    'real_url' => curl_getinfo($ch, CURLINFO_EFFECTIVE_URL)
-                );
-
-            }
-            curl_close($ch);
-
-            return $arr;
-        } else {
-            $this->_log_message("不是图片：{$url}");
-            return $arr;
-        }
-    }
-
-
-
-    /**
-     * 使用跟综重定向的方式查找被301/302跳转后的实际地址，并执行curl_exec
-     * 代码来自： http://php.net/manual/zh/function.curl-setopt.php#102121
-     *
-     * @param resource $ch          CURL资源句柄
-     * @param int      $maxredirect 最大允许的重定向次数
-     * @return string
-     */
-    private function curlExecFollow(&$ch, $maxredirect = null)
-    {
-        $mr = $maxredirect === null ? 5 : intval($maxredirect);
-        if (ini_get('open_basedir') == '' && ini_get('safe_mode' == 'Off')) {
-            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, $mr > 0);
-            curl_setopt($ch, CURLOPT_MAXREDIRS, $mr);
-        } else {
-            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
-            if ($mr > 0) {
-                $newurl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
-
-                $rch = curl_copy_handle($ch);
-                curl_setopt($rch, CURLOPT_HEADER, true);
-                curl_setopt($rch, CURLOPT_NOBODY, true);
-                curl_setopt($rch, CURLOPT_NOSIGNAL, 1);
-                curl_setopt($rch, CURLOPT_CONNECTTIMEOUT_MS, 800);
-                curl_setopt($rch, CURLOPT_FORBID_REUSE, false);
-                curl_setopt($rch, CURLOPT_RETURNTRANSFER, true);
-                do {
-                    curl_setopt($rch, CURLOPT_URL, $newurl);
-                    $header = curl_exec($rch);
-                    if (curl_errno($rch)) {
-                        $code = 0;
-                    } else {
-                        $code = curl_getinfo($rch, CURLINFO_HTTP_CODE);
-                        if ($code == 301 || $code == 302) {
-                            preg_match('/Location:(.*?)\n/', $header, $matches);
-                            $newurl = trim(array_pop($matches));
-                            /**
-                             * 这里由于部分网站返回的 Location 的值可能是相对网址, 所以还需要做一步
-                             * 转换成完整地址的操作
-                             *
-                             * @since v2.2.2
-                             */
-                            $newurl = $this->filterRelativeUrl($newurl, $this->params['origin_url']);
-                        } else {
-                            $code = 0;
-                        }
-                    }
-                } while ($code && --$mr);
-                curl_close($rch);
-                if (!$mr) {
-                    if ($maxredirect === null) {
-                        trigger_error('Too many redirects. When following redirects, libcurl hit the maximum amount.', E_USER_WARNING);
-                    } else {
-                        $maxredirect = 0;
-                    }
-                    return false;
-                }
-                curl_setopt($ch, CURLOPT_URL, $newurl);
+            $mimeType = explode('/', $mime)[0] ?? '';
+            if ($mimeType !== 'image') {
+                $this->logMessage("Not an image (invalid MIME type): {$url}");
+                curl_close($ch);
+                return $response;
             }
         }
-        return curl_exec($ch);
+
+        if ($result !== false && $statusCode >= 200 && $statusCode <= 399) {
+            $response = [
+                'code' => $statusCode,
+                'status' => 'OK',
+                'data' => $result,
+                'real_url' => $realUrl,
+            ];
+        }
+
+        curl_close($ch);
+        return $response;
     }
 
     /**
-     * 在设定的映射条件中循环并尝试匹配每一条规则，
-     * 在条件匹配时返回对应的文件内容
+     * Matches URL against file map and returns content if matched.
      *
-     * @return null|string
+     * @return string|null File content or null if no match
      */
-    private function _match_file_map()
+    private function matchFileMap(): ?string
     {
-        foreach ($this->_file_map as $rule => $file) {
+        foreach ($this->file_map as $rule => $file) {
             if (preg_match($rule, $this->full_host)) {
-                return @file_get_contents($file);
+                return @file_get_contents($file) ?: null;
             }
         }
-
-        return NULL;
+        return null;
     }
 
-
     /**
-     * 如果开启了调试模式，将会在控制台或错误日志中输出一些信息
+     * Logs message if debug mode is enabled.
      *
-     * @param $message
+     * @param string $message Message to log
      */
-    private function _log_message($message)
+    private function logMessage(string $message): void
     {
         if ($this->debug_mode) {
-            error_log(date('d/m/Y H:i:s : ') . $message . PHP_EOL, 3, "./my-errors.log");
+            error_log(sprintf('%s : %s%s', date('d/m/Y H:i:s'), $message, PHP_EOL), 3, './my-errors.log');
         }
     }
-
 }
-

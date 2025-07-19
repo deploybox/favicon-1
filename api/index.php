@@ -1,157 +1,168 @@
 <?php
 /**
- * getFavicon
- * @author    一为
- * @date      2024-12-18
- * @link      https://www.iowen.cn
- * @version   1.2.1
+ * Favicon Retrieval Script
+ *
  */
 
-if( !isset($_GET['url'])){
-    return http_response_code(404);
+declare(strict_types=1);
+
+namespace FaviconService;
+
+use Jerrybendy\Favicon\Favicon;
+use RuntimeException;
+use InvalidArgumentException;
+
+require_once 'config.php';
+require_once 'Favicon.php';
+
+// Input validation
+if (!isset($_GET['url']) || empty(trim($_GET['url']))) {
+    http_response_code(400);
+    exit;
 }
 
-require 'config.php'; // 配置文件
-require 'Favicon.php';
+try {
+    $favicon = new Favicon();
+    $favicon->debug_mode = defined('DEBUG_MODE') ? DEBUG_MODE : false;
+    
+    // Configuration constants
+    $cacheDir = CACHE_DIR ?? 'cache';
+    $hashKey = HASH_KEY ?? throw new RuntimeException('HASH_KEY not defined');
+    $defaultIcon = DEFAULT_ICO ?? throw new RuntimeException('DEFAULT_ICO not defined');
+    $expire = EXPIRE ?? 86400; // Default to 24 hours
 
-$favicon = new \Jerrybendy\Favicon\Favicon;
-
-$cache_dir  = CACHE_DIR;
-$hash_key   = HASH_KEY;
-$defaultIco = DEFAULT_ICO;
-$expire     = EXPIRE;
-
-// 如果 HASH_KEY == iowen 则生成一个随机字符串，并更新config.php文件
-if (HASH_KEY == 'iowen') {
-    $hash_key = substr(hash('sha256', uniqid()), 0, 16);
-    file_put_contents('config.php', str_replace('iowen', $hash_key, file_get_contents('config.php')));
-}
-
-/**
- * 设置默认图标
- */
-$favicon->setDefaultIcon($defaultIco);
-
-/**
- * 检测URL参数
- */
-$url = $_GET['url'];
-
-/*
- * 格式化 URL, 并尝试读取缓存
- */
-$formatUrl = $favicon->formatUrl($url);
-if ($formatUrl) {
-    if ($expire == 0) {
-        $favicon->getFavicon($formatUrl, false);
-        exit;
-    } else {
-        $defaultMD5 = md5(file_get_contents($defaultIco));
-        $cache      = new Cache($hash_key, $cache_dir);
-
-        /**
-         * 2023-02-20
-         * 增加刷新缓存参数：refresh=true 如：https://域名?url=www.iowen.cn&refresh=true
-         */
-        if (!isset($_GET['refresh']) || (isset($_GET['refresh']) && $_GET['refresh'] != 'true')) {
-            $data = $cache->get($formatUrl, $defaultMD5, $expire);
-            if ($data !== NULL) {
-                foreach ($favicon->getHeader() as $header) {
-                    @header($header);
-                }
-                header('X-Cache-Type: IO');
-                echo $data;
-                exit;
-            }
+    // Update default HASH_KEY if needed
+    if ($hashKey === 'iowen') {
+        $newHashKey = substr(hash('sha256', random_bytes(16)), 0, 16);
+        $configContent = file_get_contents('config.php');
+        if ($configContent === false) {
+            throw new RuntimeException('Failed to read config.php');
         }
-
-        /**
-         * 缓存中没有指定的内容时, 重新获取内容并缓存起来
-         */
-        $content = $favicon->getFavicon($formatUrl, true);
-
-        $cache->set($formatUrl, $content);
-
-        foreach ($favicon->getHeader() as $header) {
-            @header($header);
+        $updatedContent = str_replace('iowen', $newHashKey, $configContent);
+        if (file_put_contents('config.php', $updatedContent) === false) {
+            throw new RuntimeException('Failed to update config.php');
         }
+        $hashKey = $newHashKey;
+    }
 
-        echo $content;
+    $favicon->setDefaultIcon($defaultIcon);
+    $url = filter_var($_GET['url'], FILTER_SANITIZE_URL);
+    
+    // URL validation and formatting
+    $formatUrl = $favicon->formatUrl($url);
+    if ($formatUrl === false) {
+        http_response_code(400);
         exit;
     }
-} else {
-    return http_response_code(404);
+
+    $cache = new Cache($hashKey, $cacheDir);
+    
+    if ($expire === 0 || (isset($_GET['refresh']) && $_GET['refresh'] === 'true')) {
+        // No caching or refresh requested
+        // outputFavicon($favicon, $favicon->getFavicon($formatUrl, false));
+        $rdata = $favicon->getFavicon($formatUrl, false);
+        outputFavicon($favicon, $rdata);
+    } else {
+        // Try cache first
+        $defaultMD5 = md5_file($defaultIcon) ?: throw new RuntimeException('Failed to read default icon');
+        $cachedData = $cache->get($formatUrl, $defaultMD5, $expire);
+        
+        if ($cachedData !== null) {
+            outputFavicon($favicon, $cachedData, 'IO');
+        } else {
+            // Cache miss, fetch and store new favicon
+            $content = $favicon->getFavicon($formatUrl, true);
+            $cache->set($formatUrl, $content);
+            outputFavicon($favicon, $content);
+        }
+    }
+
+} catch (Exception $e) {
+    error_log("Favicon error: " . $e->getMessage());
+    http_response_code(500);
+    exit;
 }
 
 /**
- * 缓存类
+ * Output favicon with appropriate headers
+ */
+function outputFavicon(Favicon $favicon, string $content, string $cacheType = null): void {
+    foreach ($favicon->getHeader() as $header) {
+        header($header);
+    }
+    if ($cacheType) {
+        header("X-Cache-Type: $cacheType");
+    }
+    echo $content;
+    exit;
+}
+
+/**
+ * Cache handling class
  */
 class Cache
 {
-    public $dir = 'cache'; //图标缓存目录
+    private string $dir;
+    private string $hashKey;
 
-    public $hash_key = 'iowen'; // 哈希密钥
-
-    public function __construct($hash_key, $dir = 'cache')
+    public function __construct(string $hashKey, string $dir = 'cache')
     {
-        $this->hash_key = $hash_key;
-        $this->dir      = $dir;
+        $this->hashKey = $hashKey;
+        $this->dir = $dir;
     }
 
     /**
-     * 获取缓存的值, 不存在时返回 null
-     *
-     * @param string $key      缓存键(URL)
-     * @param string $default  默认图片
-     * @param int    $expire   过期时间
-     * @return mixed
+     * Get cached favicon
      */
-    public function get($key, $default, $expire)
+    public function get(string $key, string $defaultMD5, int $expire): ?string
     {
-        $host = strtolower(parse_url($key)['host']);
-        $hash = substr(hash_hmac('sha256', $host, $this->hash_key), 8, 16);
-        $f    = $host . '_' . $hash . '.txt';
-        $path = $this->dir . '/' . $f;
+        $host = strtolower(parse_url($key, PHP_URL_HOST) ?: throw new InvalidArgumentException('Invalid URL'));
+        $hash = substr(hash_hmac('sha256', $host, $this->hashKey), 8, 16);
+        $filePath = sprintf('%s/%s_%s.txt', $this->dir, $host, $hash);
 
-        if (is_file($path)) {
-            $data = file_get_contents($path);
-            if (md5($data) == $default) {
-                $expire = 43200; //如果返回默认图标，过期时间为12小时。
-            }
-            if ((time() - filemtime($path)) > $expire) {
-                return null;
-            } else {
-                return $data;
-            }
-        } else {
+        if (!is_file($filePath)) {
             return null;
         }
+
+        $data = file_get_contents($filePath);
+        if ($data === false) {
+            return null;
+        }
+
+        $isDefaultIcon = md5($data) === $defaultMD5;
+        $effectiveExpire = $isDefaultIcon ? 43200 : $expire;
+
+        if ((time() - filemtime($filePath)) > $effectiveExpire) {
+            return null;
+        }
+
+        return $data;
     }
 
     /**
-     * 设置缓存
-     * 保存图标到缓存目录
-     *
-     * @param string $key      缓存键(URL)
-     * @param string $value    缓存值(图标)
+     * Store favicon in cache
      */
-    public function set($key, $value)
+    public function set(string $key, string $value): void
     {
-        //如果缓存目录不存在则创建
-        if (!is_dir($this->dir)) {
-            mkdir($this->dir, 0755, true) or die('创建缓存目录失败！');
+        if (!is_dir($this->dir) && !mkdir($this->dir, 0755, true)) {
+            throw new RuntimeException('Failed to create cache directory');
         }
 
-        $host = strtolower(parse_url($key)['host']);
-        $hash = substr(hash_hmac('sha256', $host, $this->hash_key), 8, 16);
-        $f    = $host . '_' . $hash . '.txt';
-        $path = $this->dir . '/' . $f;
+        $host = strtolower(parse_url($key, PHP_URL_HOST) ?: throw new InvalidArgumentException('Invalid URL'));
+        $hash = substr(hash_hmac('sha256', $host, $this->hashKey), 8, 16);
+        $filePath = sprintf('%s/%s_%s.txt', $this->dir, $host, $hash);
 
-        $imgdata = fopen($path, "w") or die("Unable to open file!");
-        if (flock($imgdata, LOCK_EX)) {  // 获取排他锁
-            fwrite($imgdata, $value);
-            flock($imgdata, LOCK_UN);  // 释放锁
+        $fp = fopen($filePath, 'w');
+        if ($fp === false) {
+            throw new RuntimeException('Unable to open cache file');
         }
-        fclose($imgdata);
+
+        if (flock($fp, LOCK_EX)) {
+            fwrite($fp, $value);
+            flock($fp, LOCK_UN);
+        } else {
+            throw new RuntimeException('Failed to acquire file lock');
+        }
+        fclose($fp);
     }
 }
